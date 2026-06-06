@@ -1,0 +1,19 @@
+# Google Apps Script
+*.gs
+appsscript.json
+
+# Data files (optional - uncomment if you want to ignore large CSV)
+# *.csv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
