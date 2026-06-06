@@ -1,5 +1,4 @@
 # Google Apps Script
-*.gs
 appsscript.json
 
 # Data files (optional - uncomment if you want to ignore large CSV)
