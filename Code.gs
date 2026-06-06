@@ -1,466 +1,394 @@
-/**
- * ============================================================
- * SIRAH NABAWI DAILY BOT — Google Apps Script
- * PRD v2 | Production Ready | 1000+ Users
- * ============================================================
- *
- * SHEET STRUCTURE:
- *   USERS : user_id | chat_id | username | preferred_time | last_index | status | created_at
- *   SIRAH : id | fase | judul | cerita | hikmah | refleksi | sumber
- *   LOGS  : user_id | sirah_id | sent_at | status
- *
- * COLUMNS INDEX (0-based):
- *   USERS  → 0:user_id  1:chat_id  2:username  3:preferred_time  4:last_index  5:status  6:created_at
- *   SIRAH  → 0:id  1:fase  2:judul  3:cerita  4:hikmah  5:refleksi  6:sumber
- *   LOGS   → 0:user_id  1:sirah_id  2:sent_at  3:status
- */
+// ============================================================
+// SIRAH NABAWI DAILY TELEGRAM BOT
+// Stack: Google Apps Script + Google Sheets + Telegram Bot API
+// ============================================================
 
-// ─── COLUMN CONSTANTS ────────────────────────────────────────
-const U = { USER_ID:0, CHAT_ID:1, USERNAME:2, PREF_TIME:3, LAST_IDX:4, STATUS:5, CREATED:6 };
-const S = { ID:0, FASE:1, JUDUL:2, CERITA:3, HIKMAH:4, REFLEKSI:5 };
-const L = { USER_ID:0, SIRAH_ID:1, SENT_AT:2, STATUS:3 };
-
-// ─── SHEET NAMES ─────────────────────────────────────────────
-const SHEET_USERS = 'USERS';
-const SHEET_SIRAH = 'SIRAH';
-const SHEET_LOGS  = 'LOGS';
-
-// ─── HELPERS ─────────────────────────────────────────────────
-
-function getToken() {
-  return PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+// ============================================================
+// CONFIGURATION
+// ============================================================
+function getConfig_() {
+  return {
+    sheetId: PropertiesService.getScriptProperties().getProperty('SHEET_ID'),
+    botToken: PropertiesService.getScriptProperties().getProperty('BOT_TOKEN'),
+  };
 }
 
-function getSheet(name) {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
-}
-
-/**
- * Pad hour to "HH:00" format
- */
-function normalizeTime(hour) {
-  const h = parseInt(hour, 10);
-  if (isNaN(h) || h < 0 || h > 23) return null;
-  return (h < 10 ? '0' : '') + h + ':00';
-}
-
-/**
- * Current hour as "HH:00" — used for time matching
- */
-function currentHour() {
-  // Uses spreadsheet timezone automatically
-  const now = new Date();
-  const h = now.getHours();
-  return (h < 10 ? '0' : '') + h + ':00';
-}
-
-// ─── TELEGRAM API ─────────────────────────────────────────────
-
-/**
- * Send a Telegram message. Retries once on failure.
- */
-function sendTelegram(chatId, text, retries) {
-  retries = retries === undefined ? 1 : retries;
-  const url = 'https://api.telegram.org/bot' + getToken() + '/sendMessage';
-  const payload = {
+// ============================================================
+// TELEGRAM API
+// ============================================================
+function sendTelegram_(chatId, text) {
+  var config = getConfig_();
+  var url = 'https://api.telegram.org/bot' + config.botToken + '/sendMessage';
+  var payload = {
     chat_id: chatId,
     text: text,
-    parse_mode: 'HTML'
+    parse_mode: 'HTML',
   };
-  const options = {
+  var options = {
     method: 'post',
     contentType: 'application/json',
     payload: JSON.stringify(payload),
-    muteHttpExceptions: true
+    muteHttpExceptions: true,
   };
 
-  try {
-    const resp = UrlFetchApp.fetch(url, options);
-    const json = JSON.parse(resp.getContentText());
-    if (json.ok) return { ok: true };
-
-    // Handle blocked / chat not found — no point retrying
-    const fatal = [400, 403];
-    if (fatal.indexOf(json.error_code) !== -1) return { ok: false, fatal: true, error: json.description };
-
-    if (retries > 0) {
-      Utilities.sleep(1500);
-      return sendTelegram(chatId, text, retries - 1);
+  for (var i = 0; i < 2; i++) {
+    try {
+      var res = UrlFetchApp.fetch(url, options);
+      var json = JSON.parse(res.getContentText());
+      if (json.ok) return json;
+    } catch (e) {
+      if (i === 1) {
+        console.error('Telegram send failed for ' + chatId + ': ' + e.toString());
+      }
     }
-    return { ok: false, error: json.description };
-
-  } catch (e) {
-    if (retries > 0) {
-      Utilities.sleep(1500);
-      return sendTelegram(chatId, text, retries - 1);
-    }
-    return { ok: false, error: e.message };
   }
+  return null;
 }
 
-// ─── SIRAH MESSAGE FORMATTER ──────────────────────────────────
-
-function buildSirahMessage(row, index, total) {
-  const fase    = row[S.FASE]    || '';
-  const judul   = row[S.JUDUL]   || '';
-  const cerita  = row[S.CERITA]  || '';
-  const hikmah  = row[S.HIKMAH]  || '';
-  const refleksi= row[S.REFLEKSI]|| '';
-
-  return (
-    '📖 <b>Sirah Hari Ini</b> [' + index + '/' + total + ']\n' +
-    '<i>Fase: ' + fase + ' — ' + judul + '</i>\n\n' +
-    cerita + '\n\n' +
-    '💡 <b>Hikmah</b>\n' + hikmah + '\n\n' +
-    '🤍 <b>Refleksi</b>\n' + refleksi
-  );
+// ============================================================
+// SHEET OPERATIONS
+// ============================================================
+function getSheet_(name) {
+  var config = getConfig_();
+  var ss = SpreadsheetApp.openById(config.sheetId);
+  return ss.getSheetByName(name);
 }
 
-// ─── WEBHOOK HANDLER ─────────────────────────────────────────
+function normalizeTime_(val) {
+  if (val instanceof Date) {
+    return ('0' + val.getHours()).slice(-2) + ':' + ('0' + val.getMinutes()).slice(-2);
+  }
+  return String(val);
+}
 
-/**
- * Entry point for Telegram webhook POST requests.
- */
+function normalizeIndex_(val) {
+  if (val instanceof Date) return 0;
+  var n = Number(val);
+  return isNaN(n) ? 0 : Math.floor(n);
+}
+
+function getAllUsers_() {
+  var sheet = getSheet_('USERS');
+  if (!sheet) return [];
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return [];
+  return data.slice(1).map(function(row) {
+    return {
+      user_id: row[0],
+      chat_id: row[1],
+      preferred_time: normalizeTime_(row[2]),
+      last_index: normalizeIndex_(row[3]),
+      status: row[4],
+      created_at: row[5],
+    };
+  });
+}
+
+function getUserByChatId_(chatId) {
+  var sheet = getSheet_('USERS');
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  var chatIdStr = String(chatId);
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][1]) === chatIdStr) {
+      return {
+        row: i + 1,
+        user_id: data[i][0],
+        chat_id: data[i][1],
+        preferred_time: normalizeTime_(data[i][2]),
+        last_index: normalizeIndex_(data[i][3]),
+        status: data[i][4],
+        created_at: data[i][5],
+      };
+    }
+  }
+  return null;
+}
+
+function addUser_(chatId, userId) {
+  var sheet = getSheet_('USERS');
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow() + 1;
+  sheet.appendRow([userId, chatId, '', 0, 'active', new Date().toISOString()]);
+  sheet.getRange(lastRow, 4).setNumberFormat('0');
+}
+
+function updateUserField_(row, colIndex, value) {
+  var sheet = getSheet_('USERS');
+  if (!sheet) return false;
+  sheet.getRange(row, colIndex).setValue(value);
+  return true;
+}
+
+function getSirahByIndex_(index) {
+  var sheet = getSheet_('SIRAH');
+  if (!sheet || index < 1) return null;
+  var row = index + 1;
+  if (row > sheet.getLastRow()) return null;
+  var data = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return {
+    id: data[0],
+    fase: data[1],
+    judul: data[2],
+    cerita: data[3],
+    hikmah: data[4],
+    refleksi: data[5],
+    sumber: data[6],
+  };
+}
+
+function getTotalSirah_() {
+  var sheet = getSheet_('SIRAH');
+  if (!sheet) return 0;
+  return Math.max(0, sheet.getLastRow() - 1);
+}
+
+// ============================================================
+// MESSAGE FORMAT
+// ============================================================
+function formatSirahMessage(sirah) {
+  var lines = [];
+  lines.push('\ud83d\udcd6 <b>Sirah Hari Ini</b>');
+  lines.push('<i>' + sirah.fase + ' \u2014 ' + sirah.judul + '</i>');
+  lines.push('');
+  lines.push(sirah.cerita);
+  lines.push('');
+  lines.push('\ud83d\udca1 <b>Hikmah</b>');
+  lines.push(sirah.hikmah);
+  lines.push('');
+  lines.push('\ud83e\udd0d <b>Refleksi</b>');
+  lines.push(sirah.refleksi);
+  lines.push('');
+  lines.push('\u2501'.repeat(20));
+  lines.push('\ud83d\udcda Sumber: ' + sirah.sumber);
+  return lines.join('\n');
+}
+
+function parseCommand(text) {
+  if (!text || text[0] !== '/') return null;
+  var parts = text.split(' ');
+  return {
+    cmd: parts[0].toLowerCase(),
+    args: parts.slice(1).join(' ').trim(),
+  };
+}
+
+// ============================================================
+// COMMAND HANDLERS
+// ============================================================
+function handleStart(chatId, userId) {
+  var user = getUserByChatId_(chatId);
+  if (user) {
+    sendTelegram_(chatId, 'Kamu sudah terdaftar! Gunakan /jam untuk mengatur waktu pengiriman.');
+    return;
+  }
+  addUser_(chatId, userId);
+  sendTelegram_(chatId, 'Assalamu\'alaikum! \ud83c\udf19\n\nSelamat datang di <b>Sirah Nabawi Daily Bot</b>.\nKamu akan menerima satu cerita Sirah setiap hari.\n\nSilakan atur jam pengiriman:\n<code>/jam 7</code> (pagi)\n<code>/jam 19</code> (malam)');
+}
+
+function handleJam(chatId, args, userId) {
+  var hour = parseInt(args, 10);
+  if (isNaN(hour) || hour < 0 || hour > 23) {
+    sendTelegram_(chatId, 'Format salah. Gunakan angka 0-23.\nContoh: <code>/jam 7</code> atau <code>/jam 19</code>');
+    return;
+  }
+  var time = ('0' + hour).slice(-2) + ':00';
+
+  var user = getUserByChatId_(chatId);
+  if (!user) {
+    addUser_(chatId, userId);
+    user = getUserByChatId_(chatId);
+  }
+
+  var sheet = getSheet_('USERS');
+  sheet.getRange(user.row, 3).setNumberFormat('@STRING@').setValue(time);
+  sendTelegram_(chatId, '\u2705 Waktu diatur! Kamu akan menerima Sirah setiap jam ' + hour + ':00.');
+}
+
+function handleStatus(chatId) {
+  var user = getUserByChatId_(chatId);
+  if (!user) {
+    sendTelegram_(chatId, 'Kamu belum terdaftar. Ketik /start untuk mendaftar.');
+    return;
+  }
+  var total = getTotalSirah_();
+  var current = user.last_index || 0;
+  var pct = total > 0 ? Math.round((current / total) * 100) : 0;
+
+  var msg = '\ud83d\udcca <b>Status Bacaan</b>\n\n';
+  msg += 'Cerita ke: ' + current + ' / ' + total + '\n';
+  msg += 'Progress: ' + pct + '%\n';
+  msg += 'Status: ' + (user.status === 'active' ? '\u2705 Aktif' : '\u23f8\ufe0f Dijeda') + '\n';
+  msg += 'Waktu: ' + (user.preferred_time || 'Belum diatur') + '\n\n';
+  msg += 'Gunakan /jam untuk mengatur waktu.';
+
+  sendTelegram_(chatId, msg);
+}
+
+function handleStop(chatId) {
+  var user = getUserByChatId_(chatId);
+  if (!user) {
+    sendTelegram_(chatId, 'Kamu belum terdaftar. Ketik /start untuk mendaftar.');
+    return;
+  }
+  updateUserField_(user.row, 5, 'paused');
+  sendTelegram_(chatId, '\u23f8\ufe0f Bot dijeda. Ketik /lanjut untuk melanjutkan.');
+}
+
+function handleLanjut(chatId) {
+  var user = getUserByChatId_(chatId);
+  if (!user) {
+    sendTelegram_(chatId, 'Kamu belum terdaftar. Ketik /start untuk mendaftar.');
+    return;
+  }
+  updateUserField_(user.row, 5, 'active');
+  sendTelegram_(chatId, '\u2705 Bot dilanjutkan! Kamu akan menerima Sirah sesuai jadwal.');
+}
+
+function handleUlang(chatId) {
+  var user = getUserByChatId_(chatId);
+  if (!user || !user.last_index || user.last_index < 1) {
+    sendTelegram_(chatId, 'Belum ada cerita yang dikirim. Tunggu jadwal berikutnya.');
+    return;
+  }
+  var sirah = getSirahByIndex_(user.last_index);
+  if (!sirah) {
+    sendTelegram_(chatId, 'Data tidak ditemukan.');
+    return;
+  }
+  sendTelegram_(chatId, formatSirahMessage(sirah));
+}
+
+// ============================================================
+// WEBHOOK HANDLER
+// ============================================================
 function doPost(e) {
   try {
-    const update = JSON.parse(e.postData.contents);
-    handleUpdate(update);
-  } catch(err) {
-    // Silently ignore malformed payloads
-  }
-  return ContentService.createTextOutput('OK');
-}
+    var update = JSON.parse(e.postData.contents);
 
-function handleUpdate(update) {
-  const msg = update.message || update.edited_message;
-  if (!msg || !msg.text) return;
+    if (update.message) {
+      var msg = update.message;
+      var chatId = msg.chat.id;
+      var userId = msg.from.id;
+      var text = msg.text || '';
 
-  const chatId   = String(msg.chat.id);
-  const userId   = String(msg.from.id);
-  const username = msg.from.username || msg.from.first_name || 'User';
-  const text     = msg.text.trim();
+      var parsed = parseCommand(text);
+      if (!parsed) return;
 
-  if (text.startsWith('/start'))        cmdStart(userId, chatId, username);
-  else if (text.startsWith('/jam'))     cmdJam(userId, chatId, text);
-  else if (text.startsWith('/status'))  cmdStatus(userId, chatId);
-  else if (text.startsWith('/stop'))    cmdStop(userId, chatId);
-  else if (text.startsWith('/lanjut'))  cmdLanjut(userId, chatId);
-  else if (text.startsWith('/ulang'))   cmdUlang(userId, chatId);
-  else if (text.startsWith('/help'))    cmdHelp(chatId);
-  // Unknown commands are silently ignored (security: no info leak)
-}
-
-// ─── COMMANDS ─────────────────────────────────────────────────
-
-function cmdStart(userId, chatId, username) {
-  const sheet = getSheet(SHEET_USERS);
-  const data  = sheet.getDataRange().getValues(); // batch read
-
-  // Check if already registered (skip header row 0)
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][U.USER_ID]) === userId) {
-      sendTelegram(chatId,
-        'Selamat datang kembali, <b>' + username + '</b>! 👋\n\n' +
-        'Kamu sudah terdaftar. Gunakan /status untuk melihat progress.\n\n' +
-        'Ketik /help untuk daftar perintah.'
-      );
-      return;
+      if (parsed.cmd === '/start') {
+        handleStart(chatId, userId);
+      } else if (parsed.cmd === '/jam') {
+        handleJam(chatId, parsed.args, userId);
+      } else if (parsed.cmd === '/status') {
+        handleStatus(chatId);
+      } else if (parsed.cmd === '/stop') {
+        handleStop(chatId);
+      } else if (parsed.cmd === '/lanjut') {
+        handleLanjut(chatId);
+      } else if (parsed.cmd === '/ulang') {
+        handleUlang(chatId);
+      }
     }
+  } catch (err) {
+    console.error('Error in doPost: ' + err.toString());
   }
-
-  // Register new user
-  const now = new Date().toISOString();
-  sheet.appendRow([userId, chatId, username, '07:00', 0, 'active', now]);
-
-  sendTelegram(chatId,
-    'Assalamu\'alaikum, <b>' + username + '</b>! 🌙\n\n' +
-    'Selamat datang di <b>Sirah Nabawi Daily</b>.\n\n' +
-    'Setiap hari kamu akan menerima 1 kisah dari perjalanan hidup Nabi Muhammad ﷺ.\n\n' +
-    '⏰ Default pengiriman: <b>07:00</b>\n' +
-    'Ubah jam dengan: /jam 7 (atau jam lain, contoh: /jam 19)\n\n' +
-    'Ketik /help untuk daftar perintah.\n\n' +
-    'بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ'
-  );
 }
 
-function cmdJam(userId, chatId, text) {
-  // Extract number from "/jam 7" or "/jam7"
-  const parts = text.replace('/jam', '').trim();
-  const time  = normalizeTime(parts);
+function doGet(e) {
+  return ContentService.createTextOutput('Sirah Bot is running.');
+}
 
-  if (!time) {
-    sendTelegram(chatId,
-      '⚠️ Format salah.\n\nContoh yang benar:\n/jam 7\n/jam 19\n\n(Gunakan angka 0–23)'
-    );
+// ============================================================
+// SCHEDULER DELIVERY ENGINE
+// ============================================================
+function runScheduler() {
+  var config = getConfig_();
+  if (!config.sheetId || !config.botToken) {
+    console.error('Missing configuration: SHEET_ID or BOT_TOKEN');
     return;
   }
 
-  const sheet = getSheet(SHEET_USERS);
-  const data  = sheet.getDataRange().getValues();
+  var now = new Date();
+  var currentHour = ('0' + now.getHours()).slice(-2);
+  var currentMinute = ('0' + now.getMinutes()).slice(-2);
+  var currentTime = currentHour + ':' + currentMinute;
 
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][U.USER_ID]) === userId) {
-      sheet.getRange(i + 1, U.PREF_TIME + 1).setValue(time);
-      sendTelegram(chatId,
-        '✅ Berhasil! Sirah akan dikirim setiap jam <b>' + time + '</b>.\n\n' +
-        'Nantikan kisah penuh inspirasi besok ya! 🌟'
-      );
-      return;
-    }
+  var ss = SpreadsheetApp.openById(config.sheetId);
+  var usersSheet = ss.getSheetByName('USERS');
+  var sirahSheet = ss.getSheetByName('SIRAH');
+  var logsSheet = ss.getSheetByName('LOGS');
+
+  if (!usersSheet || !sirahSheet || !logsSheet) {
+    console.error('Missing required sheets: USERS, SIRAH, LOGS');
+    return;
   }
 
-  sendTelegram(chatId, '⚠️ Kamu belum terdaftar. Ketik /start dulu ya.');
-}
+  var usersData = usersSheet.getDataRange().getValues();
+  var sirahData = sirahSheet.getDataRange().getValues();
+  var totalSirah = sirahData.length - 1;
 
-function cmdStatus(userId, chatId) {
-  const userSheet = getSheet(SHEET_USERS);
-  const sirahSheet= getSheet(SHEET_SIRAH);
-  const userData  = userSheet.getDataRange().getValues();
-  const sirahData = sirahSheet.getDataRange().getValues();
-  const total     = sirahData.length - 1; // subtract header
-
-  for (let i = 1; i < userData.length; i++) {
-    if (String(userData[i][U.USER_ID]) === userId) {
-      const last    = parseInt(userData[i][U.LAST_IDX]) || 0;
-      const status  = userData[i][U.STATUS];
-      const time    = userData[i][U.PREF_TIME];
-      const pct     = total > 0 ? Math.round((last / total) * 100) : 0;
-      const bar     = buildProgressBar(pct);
-
-      sendTelegram(chatId,
-        '📊 <b>Status Sirah-mu</b>\n\n' +
-        '▶️ Progress : ' + last + ' / ' + total + ' kisah\n' +
-        '📈 ' + bar + ' ' + pct + '%\n' +
-        '⏰ Jam kirim: ' + time + '\n' +
-        '🔔 Status   : ' + (status === 'active' ? '✅ Aktif' : '⏸ Dijeda') + '\n\n' +
-        (last >= total
-          ? '🎉 Kamu telah menyelesaikan semua kisah Sirah! Alhamdulillah!'
-          : 'Sisa ' + (total - last) + ' kisah lagi. Semangat! 💪')
-      );
-      return;
-    }
+  if (totalSirah < 1) {
+    console.error('No Sirah data found in SIRAH sheet');
+    return;
   }
 
-  sendTelegram(chatId, '⚠️ Kamu belum terdaftar. Ketik /start dulu ya.');
-}
+  var toSend = [];
+  var logs = [];
 
-function cmdStop(userId, chatId) {
-  setUserStatus(userId, chatId, 'paused',
-    '⏸ Pengiriman Sirah <b>dijeda</b>.\n\nKetik /lanjut kapan saja untuk melanjutkan.'
-  );
-}
+  for (var i = 1; i < usersData.length; i++) {
+    var row = usersData[i];
+    var chatId = row[1];
+    var preferredTime = normalizeTime_(row[2]);
+    var lastIndex = normalizeIndex_(row[3]);
+    var status = row[4];
 
-function cmdLanjut(userId, chatId) {
-  setUserStatus(userId, chatId, 'active',
-    '▶️ Pengiriman Sirah <b>dilanjutkan</b>! 🌟\n\nSirah berikutnya akan tiba sesuai jadwalmu.'
-  );
-}
+    if (status !== 'active') continue;
+    if (preferredTime !== currentTime) continue;
+    if (lastIndex >= totalSirah) continue;
 
-function setUserStatus(userId, chatId, newStatus, successMsg) {
-  const sheet = getSheet(SHEET_USERS);
-  const data  = sheet.getDataRange().getValues();
-
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][U.USER_ID]) === userId) {
-      sheet.getRange(i + 1, U.STATUS + 1).setValue(newStatus);
-      sendTelegram(chatId, successMsg);
-      return;
-    }
-  }
-  sendTelegram(chatId, '⚠️ Kamu belum terdaftar. Ketik /start dulu ya.');
-}
-
-function cmdUlang(userId, chatId) {
-  const userSheet = getSheet(SHEET_USERS);
-  const sirahSheet= getSheet(SHEET_SIRAH);
-  const userData  = userSheet.getDataRange().getValues();
-  const sirahData = sirahSheet.getDataRange().getValues();
-
-  for (let i = 1; i < userData.length; i++) {
-    if (String(userData[i][U.USER_ID]) === userId) {
-      const lastIdx = parseInt(userData[i][U.LAST_IDX]) || 0;
-      if (lastIdx === 0) {
-        sendTelegram(chatId, 'ℹ️ Belum ada Sirah yang dikirim sebelumnya.');
-        return;
-      }
-      const total   = sirahData.length - 1;
-      const sirahRow= sirahData[lastIdx]; // lastIdx is 1-based, row 0 = header
-      const msg     = buildSirahMessage(sirahRow, lastIdx, total);
-      sendTelegram(chatId, '🔄 <b>Mengirim ulang Sirah #' + lastIdx + '</b>\n\n' + msg);
-      return;
-    }
-  }
-  sendTelegram(chatId, '⚠️ Kamu belum terdaftar. Ketik /start dulu ya.');
-}
-
-function cmdHelp(chatId) {
-  sendTelegram(chatId,
-    '📚 <b>Daftar Perintah Sirah Nabawi Daily</b>\n\n' +
-    '/start — Daftar / sapa bot\n' +
-    '/jam [angka] — Ubah jam kirim (contoh: /jam 7)\n' +
-    '/status — Lihat progress & jadwal\n' +
-    '/ulang — Kirim ulang Sirah terakhir\n' +
-    '/stop — Jeda pengiriman\n' +
-    '/lanjut — Lanjutkan pengiriman\n' +
-    '/help — Tampilkan menu ini\n\n' +
-    '🌙 "Sebaik-baik manusia adalah yang paling bermanfaat bagi manusia lain." — HR. Ahmad'
-  );
-}
-
-// ─── DAILY DELIVERY ENGINE ────────────────────────────────────
-
-/**
- * Main scheduler — triggered every 1 minute via time-driven trigger.
- * Batch reads all data once, processes all due users, batch writes updates.
- */
-function dailyDelivery() {
-  const now         = currentHour();
-  const userSheet   = getSheet(SHEET_USERS);
-  const sirahSheet  = getSheet(SHEET_SIRAH);
-  const logsSheet   = getSheet(LOGS_SHEET_NAME());
-
-  // ── 1. BATCH READ ──────────────────────────────────────────
-  const allUsers  = userSheet.getDataRange().getValues();   // includes header
-  const allSirah  = sirahSheet.getDataRange().getValues();  // includes header
-  const allLogs   = logsSheet.getDataRange().getValues();   // includes header
-
-  const totalSirah = allSirah.length - 1; // exclude header
-  if (totalSirah === 0) return;
-
-  // ── 2. BUILD SENT-TODAY SET (duplicate guard) ──────────────
-  // Key: "userId_sirahId"
-  const today      = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
-  const sentToday  = {};
-  for (let i = 1; i < allLogs.length; i++) {
-    const logDate = String(allLogs[i][L.SENT_AT]).slice(0, 10);
-    if (logDate === today) {
-      const key = allLogs[i][L.USER_ID] + '_' + allLogs[i][L.SIRAH_ID];
-      sentToday[key] = true;
-    }
-  }
-
-  // ── 3. PROCESS USERS ──────────────────────────────────────
-  const pendingUpdates = []; // { rowIndex, newLastIdx }
-  const newLogs        = []; // rows to append to LOGS
-
-  for (let i = 1; i < allUsers.length; i++) {
-    const row      = allUsers[i];
-    const userId   = String(row[U.USER_ID]);
-    const chatId   = String(row[U.CHAT_ID]);
-    const prefTime = String(row[U.PREF_TIME]);
-    const lastIdx  = parseInt(row[U.LAST_IDX]) || 0;
-    const status   = String(row[U.STATUS]);
-
-    // ── Guard clauses ──────────────────────────────────────
-    if (status !== 'active')        continue;
-    if (prefTime !== now)           continue;
-    if (lastIdx >= totalSirah)      continue; // completed all
-
-    const nextIdx = lastIdx + 1;
-    const dupKey  = userId + '_' + nextIdx;
-    if (sentToday[dupKey])          continue; // already sent today
-
-    // ── Get sirah (1-based index → array row nextIdx) ──────
-    const sirahRow = allSirah[nextIdx]; // row 0 = header, row 1 = sirah #1
+    var nextIndex = lastIndex + 1;
+    var sirahRow = sirahData[nextIndex];
     if (!sirahRow) continue;
 
-    const message = buildSirahMessage(sirahRow, nextIdx, totalSirah);
-    const result  = sendTelegram(chatId, message);
+    toSend.push({
+      rowIndex: i + 1,
+      chatId: chatId,
+      userId: row[0],
+      sirahId: sirahRow[0],
+      nextIndex: nextIndex,
+      sirah: {
+        fase: sirahRow[1],
+        judul: sirahRow[2],
+        cerita: sirahRow[3],
+        hikmah: sirahRow[4],
+        refleksi: sirahRow[5],
+        sumber: sirahRow[6],
+      },
+    });
+  }
 
-    const logStatus = result.ok ? 'sent' : (result.fatal ? 'fatal' : 'failed');
+  var sentCount = 0;
 
-    newLogs.push([userId, nextIdx, new Date().toISOString(), logStatus]);
+  for (var j = 0; j < toSend.length; j++) {
+    var item = toSend[j];
+    var message = formatSirahMessage(item.sirah);
+    var result = sendTelegram_(item.chatId, message);
 
-    if (result.ok) {
-      pendingUpdates.push({ rowIndex: i + 1, newLastIdx: nextIdx }); // +1 for 1-based sheet row
-      sentToday[dupKey] = true; // prevent any in-memory duplicate
+    if (result && result.ok) {
+      usersSheet.getRange(item.rowIndex, 4).setValue(item.nextIndex);
+      logs.push([item.userId, item.sirahId, new Date().toISOString(), 'sent']);
+      sentCount++;
+    } else {
+      logs.push([item.userId, item.sirahId, new Date().toISOString(), 'failed']);
     }
 
-    // Throttle: avoid hitting Telegram rate limit (30 msg/sec)
-    // At 1000 users in one minute, sleep briefly between sends
-    if (i % 25 === 0) Utilities.sleep(1000);
+    Utilities.sleep(200);
   }
 
-  // ── 4. BATCH WRITE UPDATES ────────────────────────────────
-  // Update last_index for each successful delivery
-  for (let j = 0; j < pendingUpdates.length; j++) {
-    const u = pendingUpdates[j];
-    userSheet.getRange(u.rowIndex, U.LAST_IDX + 1).setValue(u.newLastIdx);
+  if (logs.length > 0) {
+    var logRange = logsSheet.getRange(logsSheet.getLastRow() + 1, 1, logs.length, 4);
+    logRange.setValues(logs);
   }
 
-  // Append all new logs in one operation
-  if (newLogs.length > 0) {
-    logsSheet.getRange(
-      logsSheet.getLastRow() + 1,
-      1,
-      newLogs.length,
-      newLogs[0].length
-    ).setValues(newLogs);
-  }
-}
-
-// Helper — avoids direct string in multiple places
-function LOGS_SHEET_NAME() { return SHEET_LOGS; }
-
-// ─── PROGRESS BAR HELPER ─────────────────────────────────────
-
-function buildProgressBar(pct) {
-  const filled = Math.round(pct / 10);
-  return '█'.repeat(filled) + '░'.repeat(10 - filled);
-}
-
-// ─── SETUP UTILITIES ─────────────────────────────────────────
-
-/**
- * Run ONCE to register the webhook with Telegram.
- * Replace SCRIPT_URL with your deployed Apps Script web app URL.
- */
-function setWebhook() {
-  const token     = getToken();
-  const scriptUrl = PropertiesService.getScriptProperties().getProperty('SCRIPT_URL');
-  const url = 'https://api.telegram.org/bot' + token + '/setWebhook?url=' + scriptUrl;
-  const resp = UrlFetchApp.fetch(url);
-  Logger.log(resp.getContentText());
-}
-
-/**
- * Check current webhook info.
- */
-function getWebhookInfo() {
-  const resp = UrlFetchApp.fetch(
-    'https://api.telegram.org/bot' + getToken() + '/getWebhookInfo'
-  );
-  Logger.log(resp.getContentText());
-}
-
-/**
- * Delete webhook (useful for debugging with polling).
- */
-function deleteWebhook() {
-  const resp = UrlFetchApp.fetch(
-    'https://api.telegram.org/bot' + getToken() + '/deleteWebhook'
-  );
-  Logger.log(resp.getContentText());
-}
-
-/**
- * Initialize sheet headers. Run once during setup.
- */
-function initSheets() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  function ensureHeaders(sheetName, headers) {
-    let sheet = ss.getSheetByName(sheetName);
-    if (!sheet) sheet = ss.insertSheet(sheetName);
-    if (sheet.getLastRow() === 0) {
-      sheet.appendRow(headers);
-      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
-    }
-  }
-
-  ensureHeaders(SHEET_USERS, ['user_id','chat_id','username','preferred_time','last_index','status','created_at']);
-  ensureHeaders(SHEET_SIRAH, ['id','fase','judul','cerita','hikmah','refleksi','sumber']);
-  ensureHeaders(SHEET_LOGS,  ['user_id','sirah_id','sent_at','status']);
-
-  Logger.log('Sheets initialized successfully.');
+  console.log('[Scheduler ' + currentTime + '] ' + toSend.length + ' targeted, ' + sentCount + ' sent');
 }
